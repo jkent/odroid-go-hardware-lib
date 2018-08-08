@@ -9,7 +9,6 @@
 #include "driver/ledc.h"
 
 #include "display.h"
-#include "gbuf.h"
 
 
 static const gpio_num_t SPI_PIN_NUM_MISO = GPIO_NUM_19;
@@ -357,39 +356,37 @@ void display_update(void)
     send_continue_wait();
 }
 
-void display_update_rect(short x, short y, short width, short height)
+void display_update_rect(rect_t r)
 {
-    assert(x >= 0);
-    assert(y >= 0);
-    assert(width > 0);
-    assert(height > 0);
-    assert(x + width <= DISPLAY_WIDTH);
-    assert(y + height <= DISPLAY_HEIGHT);
+    assert(r.x >= 0);
+    assert(r.y >= 0);
+    assert(r.width > 0);
+    assert(r.height > 0);
+    assert(r.x + r.width <= DISPLAY_WIDTH);
+    assert(r.y + r.height <= DISPLAY_HEIGHT);
 
     xTaskToNotify = xTaskGetCurrentTaskHandle();
 
-    send_reset_drawing(x, y, width, height);
+    send_reset_drawing(r.x, r.y, r.width, r.height);
 
-    if (width == DISPLAY_WIDTH) {
-        for (short dy = 0; dy < height; dy += PARALLEL_LINES) {
+    if (r.width == DISPLAY_WIDTH) {
+        for (short dy = 0; dy < r.height; dy += PARALLEL_LINES) {
             uint16_t *pbuf = get_pbuf();
-            short numLines = height - dy;
+            short numLines = r.height - dy;
             numLines = numLines < PARALLEL_LINES ? numLines : PARALLEL_LINES; 
-            memcpy(pbuf, ((uint16_t *)fb->data) + DISPLAY_WIDTH * (y + dy) + x, width * numLines * sizeof(uint16_t));
-            send_continue_line(pbuf, width, numLines);
+            memcpy(pbuf, ((uint16_t *)fb->data) + DISPLAY_WIDTH * (r.y + dy) + r.x, r.width * numLines * sizeof(uint16_t));
+            send_continue_line(pbuf, r.width, numLines);
         }
     } else {
-        for (short dy = 0; dy < height; dy += PARALLEL_LINES) {
+        for (short dy = 0; dy < r.height; dy += PARALLEL_LINES) {
             uint16_t *pbuf = get_pbuf();
-            short numLines = height - dy;
+            short numLines = r.height - dy;
             numLines = numLines < PARALLEL_LINES ? numLines : PARALLEL_LINES;
             for (short line = 0; line < numLines; line++) {
-                memcpy(pbuf + width * line, ((uint16_t *)fb->data) + DISPLAY_WIDTH * (y + dy + line) + x, width * sizeof(uint16_t));
+                memcpy(pbuf + r.width * line, ((uint16_t *)fb->data) + DISPLAY_WIDTH * (r.y + dy + line) + r.x, r.width * sizeof(uint16_t));
             }
-            send_continue_line(pbuf, width, numLines);
+            send_continue_line(pbuf, r.width, numLines);
         }
-
-
     }
 
     send_continue_wait();
