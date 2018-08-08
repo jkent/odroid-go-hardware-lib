@@ -9,18 +9,8 @@
 #include "driver/ledc.h"
 
 #include "display.h"
+#include "gbuf.h"
 
-/* minimal header for graphics.c */
-struct gbuf_t {
-    uint16_t width;
-    uint16_t height;
-    uint16_t bytes_per_pixel; /* 2:RGB16, 3:RGB, 4:RGBA */  
-    uint16_t endian;
-    uint8_t data[];
-};
-
-struct gbuf_t *gbuf_new(uint16_t width, uint16_t height, uint16_t bytes_per_pixel, uint16_t endian);
-/* end minimal header */
 
 static const gpio_num_t SPI_PIN_NUM_MISO = GPIO_NUM_19;
 static const gpio_num_t SPI_PIN_NUM_MOSI = GPIO_NUM_23;
@@ -45,7 +35,7 @@ static bool waitForTransactions = false;
 #define PARALLEL_LINES (5)
 
 static uint16_t* pbuf[2];
-struct gbuf_t *fb = NULL;
+gbuf_t *fb = NULL;
 
 /*
  The ILI9341 needs a bunch of command/argument values to be initialized. They are stored in this struct.

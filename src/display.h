@@ -2,12 +2,13 @@
 
 #include <stdint.h>
 
+#include "gbuf.h"
+
+
 #define DISPLAY_WIDTH (320)
 #define DISPLAY_HEIGHT (240)
 
-struct gbuf_t;
-
-struct gbuf_t *fb;
+gbuf_t *fb;
 
 void display_init(void);
 void display_poweroff(void);
