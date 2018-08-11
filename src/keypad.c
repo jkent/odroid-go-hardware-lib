@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/adc.h"
 
 #include "keypad.h"
@@ -13,6 +15,27 @@
 #define KEYPAD_IO_B GPIO_NUM_33
 #define KEYPAD_IO_MENU GPIO_NUM_13
 #define KEYPAD_IO_VOLUME GPIO_NUM_0
+
+static size_t num_queues;
+static QueueHandle_t *queues;
+
+static void keypad_task(void *arg)
+{
+    keypad_info_t keypad_info;
+    uint16_t changes;
+
+    while (true) {
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        keypad_info.state = keypad_debounce(keypad_sample(), &changes);
+        keypad_info.pressed = keypad_info.state & changes;
+        keypad_info.released = ~keypad_info.state & changes;
+        if (changes) {
+            for (int i = 0; i < num_queues; i++) {
+                xQueueSend(queues[i], &keypad_info, 0);
+            }
+        }
+    }
+}
 
 void keypad_init(void)
 {
@@ -35,6 +58,8 @@ void keypad_init(void)
     gpio_set_pull_mode(KEYPAD_IO_MENU, GPIO_PULLUP_ONLY);
 
     gpio_set_direction(KEYPAD_IO_VOLUME, GPIO_MODE_INPUT);
+
+    xTaskCreate(keypad_task, "keypad", 1024, NULL, 5, NULL);
 }
 
 uint16_t keypad_sample(void)
@@ -99,4 +124,14 @@ uint16_t keypad_debounce(uint16_t sample, uint16_t *changes)
     }
 
     return state;
+}
+
+QueueHandle_t keypad_get_queue(void)
+{
+    QueueHandle_t queue = xQueueCreate(2, sizeof(keypad_info_t));
+    assert(queue != NULL);
+    queues = realloc(queues, sizeof(QueueHandle_t) * (num_queues + 1));
+    queues[num_queues] = queue;
+    num_queues += 1;
+    return queue;
 }
