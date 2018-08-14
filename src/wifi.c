@@ -5,6 +5,7 @@
 #include "esp_err.h"
 #include "esp_event_loop.h"
 #include "esp_wifi.h"
+#include "lwip/ip4_addr.h"
 
 #include "frozen.h"
 #include "wifi.h"
@@ -13,11 +14,11 @@
 typedef struct wifi_network_t {
     uint8_t ssid[32];
     uint8_t password[64];
-    uint32_t age;
 } wifi_network_t;
 
 bool wifi_enabled = false;
 bool wifi_connected = false;
+ip4_addr_t my_ip;
 
 static wifi_network_t **s_networks = NULL;
 static size_t s_network_count = 0;
@@ -29,31 +30,23 @@ static void connect_next_network(void)
         return;
     }
 
-    uint32_t min_age = UINT32_MAX;
-    wifi_network_t *next_network = NULL;
-
     if (s_current_network == NULL) {
-        next_network = s_networks[0];
+        s_current_network = s_networks[0];
     } else {
-        size_t last_index;
-        for (size_t i = 0; i < s_network_count; i++) {
-            if (s_networks[i] == s_current_network) {
-                last_index = 0;
-            } else {
-                min_age = min_age > s_networks[i]->age ? s_networks[i]->age : min_age;
-            }
-        }
-
-        for (size_t count = 0; count < s_network_count; count++) {
-            size_t i = (last_index + 1 + count) % s_network_count;
-            if (s_networks[i]->age <= min_age) {
-                next_network = s_networks[i];
+        size_t current_index;
+        for (current_index = 0; current_index < s_network_count; current_index++) {
+            if (s_networks[current_index] == s_current_network) {
                 break;
             }
         }
+        if (current_index >= s_network_count) {
+            return;
+        }
+
+        size_t next_index = (current_index + 1) % s_network_count;
+        s_current_network = s_networks[next_index];
     }
 
-    s_current_network = next_network;
     wifi_config_t wifi_config = {
         .sta = {
             .scan_method = WIFI_FAST_SCAN,
@@ -62,8 +55,8 @@ static void connect_next_network(void)
             .threshold.authmode = WIFI_AUTH_OPEN,
         },
     };
-    strncpy((char *)wifi_config.sta.ssid, (char *)next_network->ssid, sizeof(next_network->ssid));
-    strncpy((char *)wifi_config.sta.password, (char *)next_network->password, sizeof(next_network->password));
+    strncpy((char *)wifi_config.sta.ssid, (char *)s_current_network->ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, (char *)s_current_network->password, sizeof(wifi_config.sta.password));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
 }
 
@@ -76,18 +69,13 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
 
         case SYSTEM_EVENT_STA_GOT_IP:
-            if (s_current_network) {
-                s_current_network->age = 0;
-            }
             wifi_connected = true;
+            my_ip = event->event_info.got_ip.ip_info.ip;
             break;
 
         case SYSTEM_EVENT_STA_DISCONNECTED:
             wifi_connected = false;
             if (wifi_enabled) {
-                if (s_current_network) {
-                    s_current_network->age += 1;
-                }
                 connect_next_network();
             }
             break;
@@ -149,6 +137,7 @@ void wifi_enable(void)
     }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.nvs_enable = false;
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
