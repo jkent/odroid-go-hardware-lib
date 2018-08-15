@@ -11,11 +11,6 @@
 #include "wifi.h"
 
 
-typedef struct wifi_network_t {
-    uint8_t ssid[32];
-    uint8_t password[64];
-} wifi_network_t;
-
 bool wifi_enabled = false;
 bool wifi_connected = false;
 ip4_addr_t my_ip;
@@ -52,7 +47,7 @@ static void connect_next_network(void)
             .scan_method = WIFI_FAST_SCAN,
             .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
             .threshold.rssi = -127,
-            .threshold.authmode = WIFI_AUTH_OPEN,
+            .threshold.authmode = s_current_network->authmode,
         },
     };
     strncpy((char *)wifi_config.sta.ssid, (char *)s_current_network->ssid, sizeof(wifi_config.sta.ssid));
@@ -105,22 +100,52 @@ static void load_config(void)
 
     struct json_token t;
     for (int i = 0; json_scanf_array_elem(data, strlen(data), ".networks", i, &t) > 0; i++) {
-        char *ssid, *password;
-        json_scanf(t.ptr, t.len, "{ssid: %Q, password: %Q}", &ssid, &password);
+        char *ssid, *password, *authmode;
+        json_scanf(t.ptr, t.len, "{ssid: %Q, password: %Q, authmode: %Q}", &ssid, &password, &authmode);
 
         s_networks = realloc(s_networks, sizeof(wifi_network_t *) * (s_network_count + 1));
         assert(s_networks != NULL);
         wifi_network_t *network = calloc(1, sizeof(wifi_network_t));
         assert(network != NULL);
 
-        strncpy((char *)network->ssid, ssid, sizeof(network->ssid));
-        strncpy((char *)network->password, password, sizeof(network->password));
+        if (ssid) {
+            strncpy(network->ssid, ssid, sizeof(network->ssid));
+            network->ssid[sizeof(network->ssid) - 1] = '\0';
+            free(ssid);
+        }
+
+        if (password) {
+            strncpy(network->password, password, sizeof(network->password));
+            network->password[sizeof(network->password) - 1] = '\0';
+            free(password);
+        }
+
+        if (authmode) {
+            if (strcmp(authmode, "Open") == 0) {
+                network->authmode = WIFI_AUTH_OPEN;
+            } else if (strcmp(authmode, "WEP") == 0) {
+                network->authmode = WIFI_AUTH_WEP;
+            } else if (strcmp(authmode, "WPA-PSK") == 0) {
+                network->authmode = WIFI_AUTH_WPA_PSK;
+            } else if (strcmp(authmode, "WPA2-PSK") == 0) {
+                network->authmode = WIFI_AUTH_WPA2_PSK;
+            }
+            free(authmode);
+        }
+
         s_networks[s_network_count] = network;
         s_network_count += 1;
-
-        free(ssid);
-        free(password);
     }
+}
+
+void wifi_network_add(wifi_network_t *network)
+{
+    s_networks = realloc(s_networks, sizeof(wifi_network_t *) * (s_network_count + 1));
+    assert(s_networks != NULL);
+    s_networks[s_network_count] = malloc(sizeof(wifi_network_t));
+    assert(s_networks[s_network_count] != NULL);
+    memcpy(s_networks[s_network_count], network, sizeof(wifi_network_t));
+    s_network_count += 1;
 }
 
 void wifi_init(void)
