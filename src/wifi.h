@@ -13,14 +13,17 @@ typedef struct wifi_network_t {
     wifi_auth_mode_t authmode;
 } wifi_network_t;
 
+typedef void (*wifi_scan_done_cb_t)(void *arg);
+
 volatile bool wifi_enabled;
 volatile bool wifi_connected;
 wifi_network_t **wifi_networks;
 size_t wifi_network_count;
-ip4_addr_t my_ip;
+ip4_addr_t wifi_ip;
 
 void wifi_init(void);
 void wifi_enable(void);
 void wifi_disable(void);
 void wifi_network_add(wifi_network_t *network);
 void wifi_network_delete(wifi_network_t *network);
+void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg);

@@ -18,13 +18,14 @@ volatile bool wifi_enabled = false;
 volatile bool wifi_connected = false;
 wifi_network_t **wifi_networks = NULL;
 size_t wifi_network_count = 0;
-ip4_addr_t my_ip = { 0 };
+ip4_addr_t wifi_ip = { 0 };
 
 static bool s_init = false;
 static bool s_started = false;
 static bool s_ignore_disconnect = false;
 static wifi_network_t *s_current_network = NULL;
-
+static wifi_scan_done_cb_t s_scan_done_cb = NULL;
+static void *s_scan_done_arg = NULL;
 
 static void connect_network(wifi_network_t *network)
 {
@@ -91,11 +92,17 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
 
         case SYSTEM_EVENT_STA_GOT_IP:
-            my_ip = event->event_info.got_ip.ip_info.ip;
+            wifi_ip = event->event_info.got_ip.ip_info.ip;
+            break;
+
+        case SYSTEM_EVENT_SCAN_DONE:
+            if (s_scan_done_cb) {
+                s_scan_done_cb(s_scan_done_arg);
+            }
             break;
 
         case SYSTEM_EVENT_STA_DISCONNECTED:
-            memset(&my_ip, 0, sizeof(my_ip));
+            memset(&wifi_ip, 0, sizeof(wifi_ip));
             if (s_ignore_disconnect) {
                 wifi_connected = false;
                 break;
@@ -236,9 +243,6 @@ void wifi_enable(void)
 
     if (s_current_network == NULL) {
         s_current_network = get_next_network();
-        if (s_current_network == NULL) {
-            return;
-        }
     }
 
     connect_network(s_current_network);
@@ -256,4 +260,10 @@ void wifi_disable(void)
     }
     ESP_ERROR_CHECK(esp_wifi_stop());
     s_started = false;
+}
+
+void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg)
+{
+    s_scan_done_cb = cb;
+    s_scan_done_arg = arg;
 }
