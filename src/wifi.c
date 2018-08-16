@@ -197,6 +197,9 @@ void wifi_init(void)
 {
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.nvs_enable = false;
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     load_config();
 }
 
@@ -207,9 +210,6 @@ void wifi_enable(void)
     }
 
     wifi_enabled = true;
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    cfg.nvs_enable = false;
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     connect_network(get_next_network());
 }
 
@@ -222,5 +222,4 @@ void wifi_disable(void)
     wifi_enabled = false;
     esp_wifi_disconnect();
     ESP_ERROR_CHECK(esp_wifi_stop());
-    ESP_ERROR_CHECK(esp_wifi_deinit());
 }
