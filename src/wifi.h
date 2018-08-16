@@ -13,8 +13,8 @@ typedef struct wifi_network_t {
     wifi_auth_mode_t authmode;
 } wifi_network_t;
 
-bool wifi_enabled;
-bool wifi_connected;
+volatile bool wifi_enabled;
+volatile bool wifi_connected;
 wifi_network_t **wifi_networks;
 size_t wifi_network_count;
 ip4_addr_t my_ip;
