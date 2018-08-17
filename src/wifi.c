@@ -20,7 +20,7 @@ wifi_network_t **wifi_networks = NULL;
 size_t wifi_network_count = 0;
 ip4_addr_t wifi_ip = { 0 };
 
-static bool s_init = false;
+static bool s_initialized = false;
 static bool s_started = false;
 static bool s_ignore_disconnect = false;
 static wifi_network_t *s_current_network = NULL;
@@ -88,6 +88,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
 
         case SYSTEM_EVENT_STA_CONNECTED:
+            printf("Event: CONNECTED\n");
             wifi_connected = true;
             break;
 
@@ -102,8 +103,10 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
 
         case SYSTEM_EVENT_STA_DISCONNECTED:
+            printf("Event: DISCONNECTED\n");
             memset(&wifi_ip, 0, sizeof(wifi_ip));
             if (s_ignore_disconnect) {
+                s_ignore_disconnect = false;
                 wifi_connected = false;
                 break;
             }
@@ -189,9 +192,10 @@ void wifi_network_add(wifi_network_t *network)
     wifi_network_t *new_network = malloc(sizeof(wifi_network_t));
     assert(new_network != NULL);
     memcpy(new_network, network, sizeof(wifi_network_t));
-    connect_network(new_network);
     wifi_networks[wifi_network_count] = new_network;
     wifi_network_count += 1;
+
+    connect_network(new_network);
 }
 
 void wifi_network_delete(wifi_network_t *network)
@@ -224,12 +228,12 @@ void wifi_enable(void)
         return;
     }
 
-    if (!s_init) {
+    if (!s_initialized) {
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         cfg.nvs_enable = false;
         ESP_ERROR_CHECK(esp_wifi_init(&cfg));
         esp_wifi_set_storage(WIFI_STORAGE_RAM);
-        s_init = true;
+        s_initialized = true;
     }
 
     if (!s_started) {
@@ -256,10 +260,15 @@ void wifi_disable(void)
 
     wifi_enabled = false;
     if (wifi_connected) {
+        s_ignore_disconnect = true;
         ESP_ERROR_CHECK(esp_wifi_disconnect());
     }
-    ESP_ERROR_CHECK(esp_wifi_stop());
+
     s_started = false;
+    ESP_ERROR_CHECK(esp_wifi_stop());
+
+    s_initialized = false;
+    ESP_ERROR_CHECK(esp_wifi_deinit());
 }
 
 void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg)
