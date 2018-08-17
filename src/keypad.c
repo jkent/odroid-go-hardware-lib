@@ -6,6 +6,8 @@
 
 #include "keypad.h"
 
+#define REPEAT_HOLDOFF (250/portTICK_PERIOD_MS)
+#define REPEAT_RATE (80/portTICK_PERIOD_MS)
 
 #define KEYPAD_IO_X ADC1_CHANNEL_6
 #define KEYPAD_IO_Y ADC1_CHANNEL_7
@@ -24,12 +26,32 @@ static void keypad_task(void *arg)
     keypad_info_t keypad_info;
     uint16_t changes;
 
+    TickType_t down_ticks[4];
+    uint16_t repeat_count[4];
+
     while (true) {
         vTaskDelay(10 / portTICK_PERIOD_MS);
         keypad_info.state = keypad_debounce(keypad_sample(), &changes);
         keypad_info.pressed = keypad_info.state & changes;
         keypad_info.released = ~keypad_info.state & changes;
-        if (changes) {
+
+        TickType_t now = xTaskGetTickCount();
+        for (int i = 0; i < 4; i++) {
+            if ((keypad_info.pressed >> i) & 1) {
+                down_ticks[i] = now;
+                repeat_count[i] = UINT16_MAX;
+            } else if ((keypad_info.state >> i) & 1) {
+                if (now - down_ticks[i] >= REPEAT_HOLDOFF) {
+                    uint16_t n = (now - down_ticks[i] - REPEAT_HOLDOFF) / REPEAT_RATE;
+                    if (repeat_count[i] != n) {
+                        repeat_count[i] = n;
+                        keypad_info.pressed |= (1 << i);
+                    }
+                }
+            }
+        }
+
+        if (keypad_info.pressed || keypad_info.released) {
             for (int i = 0; i < num_queues; i++) {
                 xQueueSend(queues[i], &keypad_info, 0);
             }
