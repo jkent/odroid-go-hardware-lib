@@ -13,10 +13,16 @@ typedef struct wifi_network_t {
     wifi_auth_mode_t authmode;
 } wifi_network_t;
 
+typedef enum wifi_state_t {
+    WIFI_STATE_DISABLED,
+    WIFI_STATE_DISCONNECTED,
+    WIFI_STATE_CONNECTING,
+    WIFI_STATE_CONNECTED,
+} wifi_state_t;
+
 typedef void (*wifi_scan_done_cb_t)(void *arg);
 
-volatile bool wifi_enabled;
-volatile bool wifi_connected;
+volatile wifi_state_t wifi_state;
 wifi_network_t **wifi_networks;
 size_t wifi_network_count;
 ip4_addr_t wifi_ip;

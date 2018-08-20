@@ -14,14 +14,11 @@
 #include "periodic.h"
 #include "wifi.h"
 
-volatile bool wifi_enabled = false;
-volatile bool wifi_connected = false;
+volatile wifi_state_t wifi_state = WIFI_STATE_DISABLED;
 wifi_network_t **wifi_networks = NULL;
 size_t wifi_network_count = 0;
 ip4_addr_t wifi_ip = { 0 };
 
-static bool s_initialized = false;
-static bool s_started = false;
 static bool s_ignore_disconnect = false;
 static wifi_network_t *s_current_network = NULL;
 static wifi_scan_done_cb_t s_scan_done_cb = NULL;
@@ -29,9 +26,10 @@ static void *s_scan_done_arg = NULL;
 
 static void connect_network(wifi_network_t *network)
 {
-    if (wifi_connected) {
+    if (wifi_state == WIFI_STATE_CONNECTED) {
         s_ignore_disconnect = true;
         ESP_ERROR_CHECK(esp_wifi_disconnect());
+        wifi_state = WIFI_STATE_DISCONNECTED;
     }
 
     if (network == NULL) {
@@ -52,6 +50,7 @@ static void connect_network(wifi_network_t *network)
 
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_connect());
+    wifi_state = WIFI_STATE_CONNECTING;
 
     s_current_network = network;
 }
@@ -89,7 +88,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
         case SYSTEM_EVENT_STA_CONNECTED:
             printf("Event: CONNECTED\n");
-            wifi_connected = true;
+            wifi_state = WIFI_STATE_CONNECTED;
             break;
 
         case SYSTEM_EVENT_STA_GOT_IP:
@@ -105,13 +104,12 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
         case SYSTEM_EVENT_STA_DISCONNECTED:
             printf("Event: DISCONNECTED\n");
             memset(&wifi_ip, 0, sizeof(wifi_ip));
+            wifi_state = WIFI_STATE_DISCONNECTED;
             if (s_ignore_disconnect) {
                 s_ignore_disconnect = false;
-                wifi_connected = false;
                 break;
             }
-            if (wifi_connected) {
-                wifi_connected = false;
+            if (wifi_state == WIFI_STATE_CONNECTED) {
                 ESP_ERROR_CHECK(esp_wifi_connect());
                 break;
             }
@@ -224,26 +222,20 @@ void wifi_init(void)
 
 void wifi_enable(void)
 {
-    if (wifi_enabled) {
+    if (wifi_state != WIFI_STATE_DISABLED) {
         return;
     }
 
-    if (!s_initialized) {
-        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-        cfg.nvs_enable = false;
-        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-        esp_wifi_set_storage(WIFI_STORAGE_RAM);
-        s_initialized = true;
-    }
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.nvs_enable = false;
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
-    if (!s_started) {
-        ESP_ERROR_CHECK(esp_wifi_start());
-        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-        s_started = true;
-    }
-
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MAX_MODEM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    wifi_enabled = true;
+
+    wifi_state = WIFI_STATE_DISCONNECTED;
 
     if (s_current_network == NULL) {
         s_current_network = get_next_network();
@@ -254,21 +246,18 @@ void wifi_enable(void)
 
 void wifi_disable(void)
 {
-    if (!wifi_enabled) {
+    if (wifi_state == WIFI_STATE_DISABLED) {
         return;
     }
 
-    wifi_enabled = false;
-    if (wifi_connected) {
+    if (wifi_state == WIFI_STATE_CONNECTED) {
         s_ignore_disconnect = true;
         ESP_ERROR_CHECK(esp_wifi_disconnect());
     }
 
-    s_started = false;
     ESP_ERROR_CHECK(esp_wifi_stop());
-
-    s_initialized = false;
     ESP_ERROR_CHECK(esp_wifi_deinit());
+    wifi_state = WIFI_STATE_DISABLED;
 }
 
 void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg)
