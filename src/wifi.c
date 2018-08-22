@@ -29,59 +29,59 @@ ip4_addr_t s_wifi_ip = { 0 };
 static wifi_scan_done_cb_t s_scan_done_cb = NULL;
 static void *s_scan_done_arg = NULL;
 
-void wifi_connect_network(wifi_network_t *network)
+static wifi_ap_record_t *s_scan_results = NULL;
+static uint16_t s_scan_result_count = 0;
+static uint16_t s_scan_index = 0;
+
+
+static void start_scan(void)
 {
-    if (s_wifi_state == WIFI_STATE_CONNECTED) {
-        s_ignore_disconnect = true;
-        ESP_ERROR_CHECK(esp_wifi_disconnect());
-        s_wifi_state = WIFI_STATE_DISCONNECTED;
-    }
-
-    if (network == NULL) {
-        return;
-    }
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .scan_method = WIFI_FAST_SCAN,
-            .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
-            .threshold.rssi = -127,
-            .threshold.authmode = network->authmode,
-        },
-    };
-
-    strncpy((char *)wifi_config.sta.ssid, network->ssid, sizeof(wifi_config.sta.ssid));
-    strncpy((char *)wifi_config.sta.password, network->password, sizeof(wifi_config.sta.password));
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_connect());
-    s_wifi_state = WIFI_STATE_CONNECTING;
-
-    s_current_network = network;
+    wifi_scan_config_t config = { 0 };
+    esp_wifi_scan_start(&config, false);
+    s_wifi_state = WIFI_STATE_SCANNING;
 }
 
-static wifi_network_t *get_next_network(void)
+static int compare_wifi_ap_record_rssi(const void *a, const void *b)
 {
-    if (wifi_networks == NULL || wifi_network_count == 0) {
-        return NULL;
+    const wifi_ap_record_t *aa = (const wifi_ap_record_t *)a;
+    const wifi_ap_record_t *bb = (const wifi_ap_record_t *)b;
+
+    int cmp = (aa->rssi < bb->rssi) - (aa->rssi > bb->rssi);
+    if (cmp != 0) {
+        return cmp;
     }
 
-    if (s_current_network == NULL) {
-        return wifi_networks[0];
-    }
+    return strcasecmp((const char *)aa->ssid, (const char *)bb->ssid);
+    return cmp;
+}
 
-    size_t i = 0;
-    for (i = 0; i < wifi_network_count; i++) {
-        if (wifi_networks[i] == s_current_network) {
-            break;
+static void scan_connect(void)
+{
+    for (; s_scan_index < s_scan_result_count; s_scan_index++) {
+        for (size_t i = 0; i < wifi_network_count; i++) {
+            if (strcmp((const char *)s_scan_results[s_scan_index].ssid, wifi_networks[i]->ssid) == 0) {
+                s_scan_index += 1; /* skip this network if connection fails */
+                wifi_connect_network(wifi_networks[i]);
+                return;
+            }
         }
     }
-    if (i >= wifi_network_count) {
-        return NULL;
-    }
+    start_scan();
+}
 
-    i = (i + 1) % wifi_network_count;
-    return wifi_networks[i];
+static void scan_done(void)
+{
+    if (s_scan_results) {
+        free(s_scan_results);
+        s_scan_results = NULL;
+    }
+    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&s_scan_result_count));
+    s_scan_results = malloc(s_scan_result_count * sizeof(wifi_ap_record_t));
+    esp_wifi_scan_get_ap_records(&s_scan_result_count, s_scan_results);
+    qsort(s_scan_results, s_scan_result_count, sizeof(wifi_ap_record_t), compare_wifi_ap_record_rssi);
+
+    s_scan_index = 0;
+    scan_connect();
 }
 
 static esp_err_t event_handler(void *ctx, system_event_t *event)
@@ -93,6 +93,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
         case SYSTEM_EVENT_STA_CONNECTED:
             s_wifi_state = WIFI_STATE_CONNECTED;
+            s_ignore_disconnect = false;
             break;
 
         case SYSTEM_EVENT_STA_GOT_IP:
@@ -100,6 +101,10 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
 
         case SYSTEM_EVENT_SCAN_DONE:
+            if (s_wifi_state == WIFI_STATE_SCANNING) {
+                scan_done();
+                break;
+            }
             if (s_scan_done_cb) {
                 s_scan_done_cb(s_scan_done_arg);
             }
@@ -117,7 +122,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
                 break;
             }
             if (s_wifi_state != WIFI_STATE_DISABLED) {
-                wifi_connect_network(get_next_network());
+                scan_connect();
             }
             break;
 
@@ -299,7 +304,7 @@ size_t wifi_network_add(wifi_network_t *network)
     rename(CONFIG_FILE ".new", CONFIG_FILE);
 
     if (s_wifi_state != WIFI_STATE_DISABLED && s_wifi_state != WIFI_STATE_CONNECTED) {
-        wifi_connect_network(wifi_networks[wifi_network_count - 1]);
+        start_scan();
     }
 
     return i;
@@ -319,11 +324,7 @@ int wifi_network_delete(wifi_network_t *network)
 
     if (s_current_network == wifi_networks[i]) {
         if (s_wifi_state == WIFI_STATE_CONNECTED) {
-            wifi_network_t *next = get_next_network();
-            if (next == s_current_network) {
-                next = NULL;
-            }
-            wifi_connect_network(next);
+            start_scan();
         }
     }
 
@@ -339,27 +340,6 @@ int wifi_network_delete(wifi_network_t *network)
     rename(CONFIG_FILE ".new", CONFIG_FILE);
 
     return i;
-}
-
-wifi_network_t *wifi_network_iterate(wifi_network_t *network)
-{
-    size_t i;
-
-    if (network == NULL) {
-        return wifi_network_count > 0 ? wifi_networks[0] : NULL;
-    }
-
-    for (i = 0; i < wifi_network_count; i++) {
-        if (network == wifi_networks[i]) {
-            break;
-        }
-    }
-
-    if (i + 1 < wifi_network_count) {
-        return wifi_networks[i + 1];
-    } else {
-        return NULL;
-    }
 }
 
 wifi_state_t wifi_get_state(void)
@@ -401,11 +381,7 @@ void wifi_enable(void)
 
     s_wifi_state = WIFI_STATE_DISCONNECTED;
 
-    if (s_current_network == NULL) {
-        s_current_network = get_next_network();
-    }
-
-    wifi_connect_network(s_current_network);
+    start_scan();
 }
 
 void wifi_disable(void)
@@ -417,10 +393,42 @@ void wifi_disable(void)
     if (s_wifi_state == WIFI_STATE_CONNECTED) {
         s_ignore_disconnect = true;
         ESP_ERROR_CHECK(esp_wifi_disconnect());
+        s_wifi_state = WIFI_STATE_DISCONNECTED;
     }
 
     ESP_ERROR_CHECK(esp_wifi_stop());
     s_wifi_state = WIFI_STATE_DISABLED;
+}
+
+void wifi_connect_network(wifi_network_t *network)
+{
+    if (s_wifi_state == WIFI_STATE_CONNECTED) {
+        s_ignore_disconnect = true;
+        ESP_ERROR_CHECK(esp_wifi_disconnect());
+        s_wifi_state = WIFI_STATE_DISCONNECTED;
+    }
+
+    if (network == NULL) {
+        return;
+    }
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .scan_method = WIFI_FAST_SCAN,
+            .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
+            .threshold.rssi = -127,
+            .threshold.authmode = network->authmode,
+        },
+    };
+
+    strncpy((char *)wifi_config.sta.ssid, network->ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, network->password, sizeof(wifi_config.sta.password));
+
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_connect());
+    s_wifi_state = WIFI_STATE_CONNECTING;
+
+    s_current_network = network;
 }
 
 void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg)

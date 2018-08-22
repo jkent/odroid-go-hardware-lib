@@ -16,6 +16,7 @@ typedef struct wifi_network_t {
 typedef enum wifi_state_t {
     WIFI_STATE_DISABLED,
     WIFI_STATE_DISCONNECTED,
+    WIFI_STATE_SCANNING,
     WIFI_STATE_CONNECTING,
     WIFI_STATE_CONNECTED,
 } wifi_state_t;
@@ -31,7 +32,6 @@ void wifi_disable(void);
 void wifi_connect_network(wifi_network_t *network);
 size_t wifi_network_add(wifi_network_t *network);
 int wifi_network_delete(wifi_network_t *network);
-wifi_network_t *wifi_network_iterate(wifi_network_t *network);
 wifi_state_t wifi_get_state(void);
 ip4_addr_t wifi_get_ip(void);
 void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg);
