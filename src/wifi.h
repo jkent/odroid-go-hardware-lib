@@ -22,14 +22,18 @@ typedef enum wifi_state_t {
 
 typedef void (*wifi_scan_done_cb_t)(void *arg);
 
-volatile wifi_state_t wifi_state;
 wifi_network_t **wifi_networks;
 size_t wifi_network_count;
-ip4_addr_t wifi_ip;
 
 void wifi_init(void);
 void wifi_enable(void);
 void wifi_disable(void);
-void wifi_network_add(wifi_network_t *network);
-void wifi_network_delete(wifi_network_t *network);
+void wifi_connect_network(wifi_network_t *network);
+size_t wifi_network_add(wifi_network_t *network);
+int wifi_network_delete(wifi_network_t *network);
+wifi_network_t *wifi_network_iterate(wifi_network_t *network);
+wifi_state_t wifi_get_state(void);
+ip4_addr_t wifi_get_ip(void);
 void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg);
+void wifi_backup_config(void);
+void wifi_restore_config(void);

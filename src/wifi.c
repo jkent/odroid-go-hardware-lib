@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,22 +15,26 @@
 #include "periodic.h"
 #include "wifi.h"
 
-volatile wifi_state_t wifi_state = WIFI_STATE_DISABLED;
+
+#define CONFIG_FILE "/spiffs/wifi.json"
+#define BACKUP_CONFIG_FILE "/sdcard/wifi.json"
+
 wifi_network_t **wifi_networks = NULL;
 size_t wifi_network_count = 0;
-ip4_addr_t wifi_ip = { 0 };
 
+static volatile wifi_state_t s_wifi_state = WIFI_STATE_DISABLED;
 static bool s_ignore_disconnect = false;
 static wifi_network_t *s_current_network = NULL;
+ip4_addr_t s_wifi_ip = { 0 };
 static wifi_scan_done_cb_t s_scan_done_cb = NULL;
 static void *s_scan_done_arg = NULL;
 
-static void connect_network(wifi_network_t *network)
+void wifi_connect_network(wifi_network_t *network)
 {
-    if (wifi_state == WIFI_STATE_CONNECTED) {
+    if (s_wifi_state == WIFI_STATE_CONNECTED) {
         s_ignore_disconnect = true;
         ESP_ERROR_CHECK(esp_wifi_disconnect());
-        wifi_state = WIFI_STATE_DISCONNECTED;
+        s_wifi_state = WIFI_STATE_DISCONNECTED;
     }
 
     if (network == NULL) {
@@ -50,7 +55,7 @@ static void connect_network(wifi_network_t *network)
 
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_connect());
-    wifi_state = WIFI_STATE_CONNECTING;
+    s_wifi_state = WIFI_STATE_CONNECTING;
 
     s_current_network = network;
 }
@@ -83,16 +88,15 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 {
     switch (event->event_id) {
         case SYSTEM_EVENT_STA_START:
-            ESP_ERROR_CHECK(esp_wifi_connect());
+            esp_wifi_connect();
             break;
 
         case SYSTEM_EVENT_STA_CONNECTED:
-            printf("Event: CONNECTED\n");
-            wifi_state = WIFI_STATE_CONNECTED;
+            s_wifi_state = WIFI_STATE_CONNECTED;
             break;
 
         case SYSTEM_EVENT_STA_GOT_IP:
-            wifi_ip = event->event_info.got_ip.ip_info.ip;
+            s_wifi_ip = event->event_info.got_ip.ip_info.ip;
             break;
 
         case SYSTEM_EVENT_SCAN_DONE:
@@ -102,18 +106,19 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
 
         case SYSTEM_EVENT_STA_DISCONNECTED:
-            printf("Event: DISCONNECTED\n");
-            memset(&wifi_ip, 0, sizeof(wifi_ip));
-            wifi_state = WIFI_STATE_DISCONNECTED;
+            memset(&s_wifi_ip, 0, sizeof(s_wifi_ip));
             if (s_ignore_disconnect) {
                 s_ignore_disconnect = false;
                 break;
             }
-            if (wifi_state == WIFI_STATE_CONNECTED) {
+            if (s_wifi_state == WIFI_STATE_CONNECTED) {
+                s_wifi_state = WIFI_STATE_DISCONNECTED;
                 ESP_ERROR_CHECK(esp_wifi_connect());
                 break;
             }
-            connect_network(get_next_network());
+            if (s_wifi_state != WIFI_STATE_DISABLED) {
+                wifi_connect_network(get_next_network());
+            }
             break;
 
         default:
@@ -122,7 +127,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
     return ESP_OK;
 }
 
-static void load_config(void)
+static void load_config(const char *path)
 {
     const char *data;
 
@@ -132,9 +137,10 @@ static void load_config(void)
         }
         free(wifi_networks);
         wifi_networks = NULL;
+        wifi_network_count = 0;
     }
 
-    data = json_fread("/sdcard/wifi.json");
+    data = json_fread(path);
     if (data == NULL) {
         return;
     }
@@ -183,85 +189,255 @@ static void load_config(void)
     }
 }
 
-void wifi_network_add(wifi_network_t *network)
+static int json_printf_network(struct json_out *out, va_list *ap)
 {
-    wifi_networks = realloc(wifi_networks, sizeof(wifi_network_t *) * (wifi_network_count + 1));
-    assert(wifi_networks != NULL);
-    wifi_network_t *new_network = malloc(sizeof(wifi_network_t));
-    assert(new_network != NULL);
-    memcpy(new_network, network, sizeof(wifi_network_t));
-    wifi_networks[wifi_network_count] = new_network;
-    wifi_network_count += 1;
-
-    connect_network(new_network);
+    wifi_network_t *network = va_arg(*ap, wifi_network_t *);
+    char *authmode;
+    switch (network->authmode) {
+        case WIFI_AUTH_OPEN:
+            authmode = "open";
+            break;
+        case WIFI_AUTH_WEP:
+            authmode = "wep";
+            break;
+        case WIFI_AUTH_WPA_PSK:
+            authmode = "wpa-psk";
+            break;
+        case WIFI_AUTH_WPA2_PSK:
+            authmode = "wpa2-psk";
+            break;
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            authmode = "wpa/wpa2-psk";
+            break;
+        default:
+            authmode = "unknown";
+            break;
+    }
+    return json_printf(out, "{ssid: %Q, password: %Q, authmode: %Q}", network->ssid, network->password, authmode);
 }
 
-void wifi_network_delete(wifi_network_t *network)
+static int json_printf_networks(struct json_out *out, va_list *ap)
 {
-    for (int i = 0; i < wifi_network_count; i++) {
-        if (memcmp(network, wifi_networks[i], sizeof(wifi_network_t)) == 0) {
-            if (s_current_network == wifi_networks[i]) {
-                s_current_network = NULL;
+    int len = 0;
+    wifi_network_t **networks = va_arg(*ap, wifi_network_t **);
+    size_t network_count = va_arg(*ap, size_t);
+    len += json_printf(out, "[");
+    for (int i = 0; i < network_count; i++) {
+        if (i > 0) {
+            len += json_printf(out, ", ");
+        }
+        len += json_printf(out, "%M", json_printf_network, networks[i]);
+    }
+    len += json_printf(out, "]");
+    return len;
+}
+
+static void write_config(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        return; /* fail silently */
+    }
+    struct json_out out = JSON_OUT_FILE(f);
+    json_printf(&out, "{networks: %M}", json_printf_networks, wifi_networks, wifi_network_count);
+    fclose(f);
+}
+
+static int compare_wifi_networks(const void *a, const void *b)
+{
+    const wifi_network_t *aa = (const wifi_network_t *)a;
+    const wifi_network_t *bb = (const wifi_network_t *)b;
+
+    return strcasecmp((const char *)aa->ssid, (const char *)bb->ssid);
+}
+
+static int find_last_wifi_network(wifi_network_t *network)
+{
+    int i;
+    for (i = 0; i < wifi_network_count; i++) {
+        int n = compare_wifi_networks(network, wifi_networks[i]);
+        if (n == 0) {
+            int last_seen = i;
+            i += 1;
+            while (i < wifi_network_count) {
+                n = compare_wifi_networks(network, wifi_networks[i]);
+                if (n == 0) {
+                    last_seen = i;
+                } else {
+                    break;
+                }
+                i += 1;
             }
-            if (i < wifi_network_count - 1) {
-                memmove(&wifi_networks[i], &wifi_networks[i + 1], sizeof(wifi_network_t *) * (wifi_network_count - i - 1));
-            }
-            wifi_networks = realloc(wifi_networks, sizeof(wifi_network_t *) * wifi_network_count - 1);
-            assert(wifi_networks != NULL);
+            return last_seen;
+        }
+        if (n < 0) {
             break;
         }
     }
+    return -(i + 1);
+}
+
+size_t wifi_network_add(wifi_network_t *network)
+{
+    int i = find_last_wifi_network(network);
+    if (i >= 0) {
+        i += 1; /* insert after last */
+    } else {
+        i = -(i + 1);
+    }
+
+    wifi_networks = realloc(wifi_networks, sizeof(wifi_network_t *) * (wifi_network_count + 1));
+    assert(wifi_networks != NULL);
+    memmove(&wifi_networks[i + 1], &wifi_networks[i], sizeof(wifi_network_t *) * (wifi_network_count - i));
+    wifi_networks[i] = malloc(sizeof(wifi_network_t));
+    assert(wifi_networks[i] != NULL);
+    memcpy(wifi_networks[i], network, sizeof(wifi_network_t));
+    wifi_network_count += 1;
+
+    write_config(CONFIG_FILE ".new");
+    remove(CONFIG_FILE);
+    rename(CONFIG_FILE ".new", CONFIG_FILE);
+
+    if (s_wifi_state != WIFI_STATE_DISABLED && s_wifi_state != WIFI_STATE_CONNECTED) {
+        wifi_connect_network(wifi_networks[wifi_network_count - 1]);
+    }
+
+    return i;
+}
+
+int wifi_network_delete(wifi_network_t *network)
+{
+    size_t i;
+    for (i = 0; i < wifi_network_count; i++) {
+        if (network == wifi_networks[i]) {
+            break;
+        }
+    }
+    if (i >= wifi_network_count) {
+        return -1;
+    }
+
+    if (s_current_network == wifi_networks[i]) {
+        if (s_wifi_state == WIFI_STATE_CONNECTED) {
+            wifi_network_t *next = get_next_network();
+            if (next == s_current_network) {
+                next = NULL;
+            }
+            wifi_connect_network(next);
+        }
+    }
+
+    if (i < wifi_network_count - 1) {
+        memmove(&wifi_networks[i], &wifi_networks[i + 1], sizeof(wifi_network_t *) * (wifi_network_count - i - 1));
+    }
+    wifi_networks = realloc(wifi_networks, sizeof(wifi_network_t *) * wifi_network_count - 1);
+    assert(wifi_networks != NULL);
+    wifi_network_count -= 1;
+
+    write_config(CONFIG_FILE ".new");
+    remove(CONFIG_FILE);
+    rename(CONFIG_FILE ".new", CONFIG_FILE);
+
+    return i;
+}
+
+wifi_network_t *wifi_network_iterate(wifi_network_t *network)
+{
+    size_t i;
+
+    if (network == NULL) {
+        return wifi_network_count > 0 ? wifi_networks[0] : NULL;
+    }
+
+    for (i = 0; i < wifi_network_count; i++) {
+        if (network == wifi_networks[i]) {
+            break;
+        }
+    }
+
+    if (i + 1 < wifi_network_count) {
+        return wifi_networks[i + 1];
+    } else {
+        return NULL;
+    }
+}
+
+wifi_state_t wifi_get_state(void)
+{
+    return s_wifi_state;
+}
+
+ip4_addr_t wifi_get_ip(void)
+{
+    return s_wifi_ip;
 }
 
 void wifi_init(void)
 {
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
-    load_config();
+    load_config(CONFIG_FILE);
 }
 
 void wifi_enable(void)
 {
-    if (wifi_state != WIFI_STATE_DISABLED) {
+    static bool wifi_init = false;
+
+    if (s_wifi_state != WIFI_STATE_DISABLED) {
         return;
     }
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    cfg.nvs_enable = false;
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (!wifi_init) {
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        cfg.nvs_enable = false;
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        esp_wifi_set_storage(WIFI_STORAGE_RAM);
+        wifi_init = true;
+    }
 
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MAX_MODEM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
-    wifi_state = WIFI_STATE_DISCONNECTED;
+    s_wifi_state = WIFI_STATE_DISCONNECTED;
 
     if (s_current_network == NULL) {
         s_current_network = get_next_network();
     }
 
-    connect_network(s_current_network);
+    wifi_connect_network(s_current_network);
 }
 
 void wifi_disable(void)
 {
-    if (wifi_state == WIFI_STATE_DISABLED) {
+    if (s_wifi_state == WIFI_STATE_DISABLED) {
         return;
     }
 
-    if (wifi_state == WIFI_STATE_CONNECTED) {
+    if (s_wifi_state == WIFI_STATE_CONNECTED) {
         s_ignore_disconnect = true;
         ESP_ERROR_CHECK(esp_wifi_disconnect());
     }
 
     ESP_ERROR_CHECK(esp_wifi_stop());
-    ESP_ERROR_CHECK(esp_wifi_deinit());
-    wifi_state = WIFI_STATE_DISABLED;
+    s_wifi_state = WIFI_STATE_DISABLED;
 }
 
 void wifi_register_scan_done_callback(wifi_scan_done_cb_t cb, void *arg)
 {
     s_scan_done_cb = cb;
     s_scan_done_arg = arg;
+}
+
+void wifi_backup_config(void)
+{
+    write_config(BACKUP_CONFIG_FILE);
+}
+
+void wifi_restore_config(void)
+{
+    load_config(BACKUP_CONFIG_FILE);
+    write_config(CONFIG_FILE ".new");
+    remove(CONFIG_FILE);
+    rename(CONFIG_FILE ".new", CONFIG_FILE);
 }
