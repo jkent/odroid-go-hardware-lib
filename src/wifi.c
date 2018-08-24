@@ -12,7 +12,6 @@
 #include "lwip/ip4_addr.h"
 
 #include "frozen.h"
-#include "periodic.h"
 #include "wifi.h"
 
 
