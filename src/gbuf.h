@@ -1,5 +1,6 @@
 #pragma once
 
+#include <machine/endian.h>
 #include <stdint.h>
 
 
